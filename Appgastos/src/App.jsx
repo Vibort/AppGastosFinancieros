@@ -1,614 +1,750 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  TrendingDown, 
-  TrendingUp, 
-  CreditCard, 
-  DollarSign, 
-  Calendar, 
-  PlusCircle, 
-  Trash2, 
-  CheckCircle, 
-  AlertCircle,
-  PiggyBank,
-  ArrowUpRight,
-  ChevronRight,
-  Layers,
-  History
-} from 'lucide-react';
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+} from "recharts";
+import {
+  Wallet, PieChart as PieIcon, CreditCard, DollarSign, Pencil, Trash2,
+  Plus, X, ChevronLeft, ChevronRight, AlertTriangle, CheckCircle2, Banknote,
+  Download, PiggyBank, Users, Repeat,
+} from "lucide-react";
 
-export default function App() {
-  // ----------------------------------------------------
-  // ESTADOS CON CARGA INICIAL DESDE LOCALSTORAGE
-  // ----------------------------------------------------
-  
-  // 1. Transacciones (Gastos e Ingresos mensuales)
-  const [transacciones, setTransacciones] = useState(() => {
-    const guardado = localStorage.getItem("app_transacciones");
-    if (guardado) return JSON.parse(guardado);
-    // Datos por defecto si está vacío
-    return [
-      { id: 1, tipo: 'gasto', categoria: 'Alquiler', detalle: 'Mes corriente', monto: 180000, fecha: '2026-03-01', pagado: true },
-      { id: 2, tipo: 'gasto', categoria: 'Servicios', detalle: 'Luz y Gas', monto: 25000, fecha: '2026-03-05', pagado: true },
-      { id: 3, tipo: 'ingreso', categoria: 'Sueldo', detalle: 'Haberes principales', monto: 650000, fecha: '2026-03-02', pagado: true },
-      { id: 4, tipo: 'gasto', categoria: 'Supermercado', detalle: 'Compra mensual', monto: 85000, fecha: '2026-03-06', pagado: false },
-    ];
+/* ---------------------------------------------------------
+   CONSTANTES Y HELPERS DE FECHA / MES
+--------------------------------------------------------- */
+const CATEGORIES = [
+  { id: "comida", label: "Comida", color: "#f97316" },
+  { id: "transporte", label: "Transporte", color: "#3b82f6" },
+  { id: "vivienda", label: "Alquiler/Vivienda", color: "#0ea5e9" },
+  { id: "servicios", label: "Servicios", color: "#eab308" },
+  { id: "salud", label: "Salud", color: "#ef4444" },
+  { id: "ocio", label: "Ocio", color: "#a855f7" },
+  { id: "ahorro", label: "Ahorro/Inversión", color: "#22c55e" },
+  { id: "otros", label: "Otros", color: "#64748b" },
+];
+const catInfo = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[CATEGORIES.length - 1];
+
+const CARD_TYPES = [
+  { id: "Visa", color: "#1a56db" },
+  { id: "Mastercard", color: "#eb001b" },
+  { id: "Otra", color: "#64748b" },
+];
+
+const STORAGE_KEY = "finance-app-state-v1";
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function currentMonthStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+}
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function parseMonth(m) {
+  const [y, mo] = m.split("-").map(Number);
+  return { y, mo };
+}
+function monthDiff(a, b) {
+  const A = parseMonth(a), B = parseMonth(b);
+  return (A.y - B.y) * 12 + (A.mo - B.mo);
+}
+function addMonths(m, delta) {
+  const { y, mo } = parseMonth(m);
+  const total = y * 12 + (mo - 1) + delta;
+  const ny = Math.floor(total / 12);
+  const nmo = (total % 12) + 1;
+  return `${ny}-${pad2(nmo)}`;
+}
+function monthLabel(m) {
+  const { y, mo } = parseMonth(m);
+  return new Date(y, mo - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" });
+}
+function monthShort(m) {
+  const { y, mo } = parseMonth(m);
+  return new Date(y, mo - 1, 1).toLocaleDateString("es-AR", { month: "short" });
+}
+function fmt(n) {
+  return new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
+}
+function fmtUSD(n) {
+  return new Intl.NumberFormat("es-AR", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n || 0);
+}
+function defaultDateForMonth(monthStr) {
+  return monthStr === currentMonthStr() ? todayISO() : `${monthStr}-01`;
+}
+function daysInMonth(monthStr) {
+  const { y, mo } = parseMonth(monthStr);
+  return new Date(y, mo, 0).getDate();
+}
+function clampDateForMonth(monthStr, day) {
+  const d = Math.min(Math.max(1, Number(day) || 1), daysInMonth(monthStr));
+  return `${monthStr}-${pad2(d)}`;
+}
+
+/* ---------------------------------------------------------
+   LÓGICA DE CUOTAS (sin loops: pura aritmética de meses)
+--------------------------------------------------------- */
+function getInstallmentInfo(card, monthStr) {
+  const diff = monthDiff(monthStr, card.startMonth);
+  const num = diff + 1;
+  const amount = card.totalAmount / card.installments;
+  if (num < 1) return { status: "pendiente", num: 0, amount: 0, remaining: card.installments };
+  if (num > card.installments) return { status: "finalizada", num: card.installments, amount: 0, remaining: 0 };
+  return { status: "activa", num, amount, remaining: card.installments - num };
+}
+
+/* Datos semilla (cargados desde tus capturas) */
+const seedExpenses = [
+  { id: 1, desc: "Empleada doméstica", amount: 99200, category: "otros", type: "variable", date: "2026-07-30" },
+  { id: 2, desc: "Meli+", amount: 21000, category: "ocio", type: "variable", date: "2026-07-22" },
+  { id: 3, desc: "HBO max", amount: 8500, category: "ocio", type: "variable", date: "2026-07-18" },
+  { id: 4, desc: "Luz", amount: 25000, category: "servicios", type: "fijo", date: "2026-07-10" },
+  { id: 5, desc: "Peluquería", amount: 30000, category: "otros", type: "fijo", date: "2026-07-10" },
+  { id: 6, desc: "Inversiones fede", amount: 11000, category: "ahorro", type: "fijo", date: "2026-07-10" },
+  { id: 7, desc: "Celular", amount: 16000, category: "servicios", type: "variable", date: "2026-07-10" },
+  { id: 8, desc: "Gastos auto patente y vtv", amount: 40000, category: "transporte", type: "fijo", date: "2026-07-10" },
+  { id: 9, desc: "Alquiler", amount: 299000, category: "vivienda", type: "fijo", date: "2026-07-10" },
+  { id: 10, desc: "Manutención", amount: 350000, category: "otros", type: "fijo", date: "2026-07-07" },
+  { id: 11, desc: "huevos", amount: 2000, category: "comida", type: "variable", date: "2026-07-06" },
+  { id: 12, desc: "queso cremoso lasañas", amount: 14069, category: "comida", type: "variable", date: "2026-07-06" },
+  { id: 13, desc: "bolsas y envases para microondas lasaña", amount: 12600, category: "comida", type: "variable", date: "2026-07-06" },
+  { id: 14, desc: "salsa para lasaña", amount: 2500, category: "comida", type: "variable", date: "2026-07-06" },
+  { id: 15, desc: "Pedidos ya+", amount: 6400, category: "comida", type: "variable", date: "2026-07-06" },
+  { id: 16, desc: "Gas", amount: 25000, category: "servicios", type: "fijo", date: "2026-07-06" },
+  { id: 17, desc: "Internet", amount: 32820, category: "servicios", type: "variable", date: "2026-07-06" },
+];
+const seedCards = [
+  { id: 101, name: "Multiprocesadora", totalAmount: 67511, installments: 12, startMonth: "2026-03", cardType: "Visa", owner: "Propio" },
+  { id: 102, name: "Celular mama", totalAmount: 349999, installments: 12, startMonth: "2026-03", cardType: "Mastercard", owner: "Propio" },
+  { id: 103, name: "Mochila viaje", totalAmount: 49699, installments: 6, startMonth: "2026-04", cardType: "Visa", owner: "Propio" },
+  { id: 104, name: "Termo regalo rena", totalAmount: 32200, installments: 1, startMonth: "2026-07", cardType: "Otra", owner: "Propio" },
+  { id: 105, name: "Cobertura de salud", totalAmount: 99400, installments: 3, startMonth: "2026-05", cardType: "Visa", owner: "Propio" },
+  { id: 106, name: "Nafta", totalAmount: 298045, installments: 1, startMonth: "2026-07", cardType: "Mastercard", owner: "Propio" },
+  { id: 107, name: "Seguro de auto", totalAmount: 1000000, installments: 12, startMonth: "2026-07", cardType: "Mastercard", owner: "Propio" },
+  { id: 108, name: "Vaso termico rena", totalAmount: 23028, installments: 3, startMonth: "2026-05", cardType: "Visa", owner: "Propio" },
+  { id: 109, name: "Balanza y picadora", totalAmount: 14367, installments: 3, startMonth: "2026-05", cardType: "Visa", owner: "Propio" },
+  { id: 110, name: "Organizador zapatos", totalAmount: 29206, installments: 6, startMonth: "2026-04", cardType: "Visa", owner: "Propio" },
+  { id: 111, name: "PC", totalAmount: 677708, installments: 3, startMonth: "2026-05", cardType: "Mastercard", owner: "Franco miras" },
+  { id: 112, name: "Freidora de aire", totalAmount: 80007, installments: 9, startMonth: "2026-06", cardType: "Visa", owner: "Propio" },
+  { id: 113, name: "Zapatillas lule", totalAmount: 90999, installments: 6, startMonth: "2026-06", cardType: "Visa", owner: "Lule González" },
+  { id: 114, name: "Cotillón luminoso", totalAmount: 54668, installments: 3, startMonth: "2026-07", cardType: "Visa", owner: "Rena" },
+  { id: 115, name: "Regalo papa celular", totalAmount: 289999, installments: 6, startMonth: "2026-07", cardType: "Visa", owner: "Propio y yael" },
+  { id: 116, name: "Costo lasañas", totalAmount: 110959, installments: 1, startMonth: "2026-07", cardType: "Visa", owner: "Propio" },
+  { id: 117, name: "Helado pedidos ya", totalAmount: 11440, installments: 1, startMonth: "2026-07", cardType: "Mastercard", owner: "Propio" },
+  { id: 118, name: "Carne molida día del padre", totalAmount: 13207, installments: 1, startMonth: "2026-07", cardType: "Visa", owner: "Propio" },
+  { id: 119, name: "Paramount+", totalAmount: 4725, installments: 1, startMonth: "2026-07", cardType: "Visa", owner: "Propio" },
+  { id: 120, name: "Mercadería varias", totalAmount: 31277, installments: 1, startMonth: "2026-07", cardType: "Visa", owner: "Propio" },
+  { id: 121, name: "Disfraz Elsa Guille", totalAmount: 64990, installments: 3, startMonth: "2026-07", cardType: "Visa", owner: "Rena" },
+  { id: 122, name: "Helado Michel", totalAmount: 15000, installments: 1, startMonth: "2026-08", cardType: "Mastercard", owner: "Propio" },
+];
+const seedIncome = { sueldoNeto: 1752000 };
+const seedExtraIncomes = [
+  { id: 1, name: "Pagos tarjeta", amount: 283308, date: "2026-07-01" },
+  { id: 2, name: "Aguinaldo", amount: 894000, date: "2026-07-01" },
+  { id: 3, name: "Pizzetas y lasañas", amount: 168000, date: "2026-07-01" },
+];
+const seedIdeal = { vivienda: 25, fijos: 25, variables: 20, ahorro: 20, tarjetas: 10 };
+const seedUsdExpenses = [];
+const seedUsdPurchases = [];
+const seedSavingsGoal = 1000000;
+
+export default function ExpenseTracker() {
+  /* Inicialización directa desde localStorage si existe, o cae en las semillas */
+  const [expenses, setExpenses] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.expenses) return d.expenses; } catch(e){}
+    }
+    return seedExpenses;
   });
 
-  // 2. Tarjetas de Crédito
-  const [tarjetas, setTarjetas] = useState(() => {
-    const guardado = localStorage.getItem("app_tarjetas");
-    if (guardado) return JSON.parse(guardado);
-    return [
-      { id: 1, banco: 'Santander', nombre: 'Visa Black', cierre: '2026-03-20', vencimiento: '2026-03-28', saldoPesos: 125000, saldoDolares: 45, pagada: false },
-      { id: 2, banco: 'Galicia', nombre: 'Mastercard Gold', cierre: '2026-03-15', vencimiento: '2026-03-23', saldoPesos: 68000, saldoDolares: 0, pagada: false }
-    ];
+  const [cards, setCards] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.cards) return d.cards.map((c) => ({ cardType: "Visa", owner: "Propio", ...c })); } catch(e){}
+    }
+    return seedCards;
   });
 
-  // 3. Inversiones Mensuales
-  const [inversiones, setInversiones] = useState(() => {
-    const guardado = localStorage.getItem("app_inversiones");
-    if (guardado) return JSON.parse(guardado);
-    return [
-      { id: 1, tipo: 'CEDEAR', activo: 'AAPL', cantidad: 3, montoPesos: 45000, fecha: '2026-03-03' },
-      { id: 2, tipo: 'FCI', activo: 'Mercado Fondo', cantidad: 1, montoPesos: 100000, fecha: '2026-03-01' },
-      { id: 3, tipo: 'Cripto', activo: 'BTC', cantidad: 0.0005, montoPesos: 35000, fecha: '2026-03-05' }
-    ];
+  const [income, setIncome] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.income) return d.income; } catch(e){}
+    }
+    return seedIncome;
   });
 
-  // 4. Cotización del Dólar y su historial
-  const [precioDolar, setPrecioDolar] = useState(() => {
-    const guardado = localStorage.getItem("app_precio_dolar");
-    return guardado ? Number(guardado) : 1250;
+  const [extraIncomes, setExtraIncomes] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.extraIncomes) return d.extraIncomes; } catch(e){}
+    }
+    return seedExtraIncomes;
   });
 
-  const [historialDolar, setHistorialDolar] = useState(() => {
-    const guardado = localStorage.getItem("app_historial_dolar");
-    if (guardado) return JSON.parse(guardado);
-    return [
-      { fecha: '2026-01', precio: 1100 },
-      { fecha: '2026-02', precio: 1180 },
-      { fecha: '2026-03', precio: 1250 }
-    ];
+  const [idealPercents, setIdealPercents] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.idealPercents) return d.idealPercents; } catch(e){}
+    }
+    return seedIdeal;
   });
 
-  // Estados visuales de la interfaz
-  const [vistaActual, setVistaActual] = useState('dashboard');
-  const [filtroMes, setFiltroMes] = useState('2026-03');
+  const [usdRate, setUsdRate] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.usdRate) return d.usdRate; } catch(e){}
+    }
+    return 1000;
+  });
 
-  // Estados de formularios
-  const [nuevoGasto, setNuevoGasto] = useState({ categoria: '', detalle: '', monto: '', fecha: new Date().toISOString().split('T')[0], tipo: 'gasto' });
-  const [nuevaInversion, setNuevaInversion] = useState({ tipo: 'CEDEAR', activo: '', cantidad: '', montoPesos: '', fecha: new Date().toISOString().split('T')[0] });
-  const [nuevoPrecioDolar, setNuevoPrecioDolar] = useState(precioDolar.toString());
+  const [usdExpenses, setUsdExpenses] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.usdExpenses) return d.usdExpenses; } catch(e){}
+    }
+    return seedUsdExpenses;
+  });
 
-  // ----------------------------------------------------
-  // WATCHERS / EFFECTOS PARA DISPARAR EL GUARDADO
-  // ----------------------------------------------------
+  const [usdPurchases, setUsdPurchases] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.usdPurchases) return d.usdPurchases; } catch(e){}
+    }
+    return seedUsdPurchases;
+  });
+
+  const [savingsGoal, setSavingsGoal] = useState(() => {
+    const local = localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      try { const d = JSON.parse(local); if (d.savingsGoal) return d.savingsGoal; } catch(e){}
+    }
+    return seedSavingsGoal;
+  });
+
+  const [tab, setTab] = useState("gastos");
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthStr());
+  const [editingId, setEditingId] = useState(null);
+  const [editingCardId, setEditingCardId] = useState(null);
+  const [showAddExpense, setShowAddExpense] = useState(false);
+  const [showAddCard, setShowAddCard] = useState(false);
+  const [showAddExtraIncome, setShowAddExtraIncome] = useState(false);
+  const [showAddUsdExpense, setShowAddUsdExpense] = useState(false);
+  const [showAddUsdPurchase, setShowAddUsdPurchase] = useState(false);
+
+  const [form, setForm] = useState({ desc: "", amount: "", category: "comida", type: "variable", date: todayISO(), repeat: true, repeatMonths: "12" });
+  const [cardForm, setCardForm] = useState({ name: "", totalAmount: "", installments: "", startMonth: currentMonthStr(), cardType: "Visa", owner: "Propio" });
+  const [extraIncomeForm, setExtraIncomeForm] = useState({ name: "", amount: "", date: todayISO() });
+  const [usdExpenseForm, setUsdExpenseForm] = useState({ desc: "", amount: "", date: todayISO() });
+  const [usdPurchaseForm, setUsdPurchaseForm] = useState({ amount: "", price: "", date: todayISO() });
+
+  /* --------- Guardado persistente sincrónico en localStorage --------- */
   useEffect(() => {
-    localStorage.setItem("app_transacciones", JSON.stringify(transacciones));
-  }, [transacciones]);
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ expenses, cards, income, extraIncomes, idealPercents, usdRate, usdExpenses, usdPurchases, savingsGoal })
+    );
+  }, [expenses, cards, income, extraIncomes, idealPercents, usdRate, usdExpenses, usdPurchases, savingsGoal]);
 
-  useEffect(() => {
-    localStorage.setItem("app_tarjetas", JSON.stringify(tarjetas));
-  }, [tarjetas]);
+  /* --------- Gastos del mes seleccionado --------- */
+  const monthExpenses = useMemo(
+    () => expenses.filter((e) => e.date.slice(0, 7) === selectedMonth),
+    [expenses, selectedMonth]
+  );
+  const totalMonthExpenses = monthExpenses.reduce((s, e) => s + Number(e.amount), 0);
 
-  useEffect(() => {
-    localStorage.setItem("app_inversiones", JSON.stringify(inversiones));
-  }, [inversiones]);
+  /* --------- Ingresos extra del mes seleccionado --------- */
+  const monthExtraIncomes = useMemo(
+    () => extraIncomes.filter((x) => x.date.slice(0, 7) === selectedMonth),
+    [extraIncomes, selectedMonth]
+  );
+  const extrasMonthTotal = monthExtraIncomes.reduce((s, x) => s + Number(x.amount), 0);
 
-  useEffect(() => {
-    localStorage.setItem("app_precio_dolar", precioDolar.toString());
-  }, [precioDolar]);
+  /* --------- Gastos y compras en USD del mes seleccionado --------- */
+  const monthUsdExpenses = useMemo(
+    () => usdExpenses.filter((x) => x.date.slice(0, 7) === selectedMonth),
+    [usdExpenses, selectedMonth]
+  );
+  const monthUsdPurchases = useMemo(
+    () => usdPurchases.filter((x) => x.date.slice(0, 7) === selectedMonth),
+    [usdPurchases, selectedMonth]
+  );
+  const totalUsdExpensesMonth = monthUsdExpenses.reduce((s, x) => s + Number(x.amount), 0);
+  const totalUsdPurchasedMonth = monthUsdPurchases.reduce((s, x) => s + Number(x.amount), 0);
+  const totalArsInvertidoMonth = monthUsdPurchases.reduce((s, x) => s + Number(x.amount) * Number(x.price), 0);
+  const valorActualComprasMonth = totalUsdPurchasedMonth * usdRate;
+  const gananciaPerdidaMonth = valorActualComprasMonth - totalArsInvertidoMonth;
+  const arsEquivGastosUsdMonth = totalUsdExpensesMonth * usdRate;
 
-  useEffect(() => {
-    localStorage.setItem("app_historial_dolar", JSON.stringify(historialDolar));
-  }, [historialDolar]);
+  /* --------- Total histórico invertido en USD (para ahorro acumulado) --------- */
+  const totalUsdInvertidoAllTime = useMemo(
+    () => usdPurchases.reduce((s, x) => s + Number(x.amount) * Number(x.price), 0),
+    [usdPurchases]
+  );
 
+  /* --------- Cuotas activas del mes seleccionado --------- */
+  const activeInstallments = useMemo(
+    () => cards.map((c) => ({ card: c, info: getInstallmentInfo(c, selectedMonth) })).filter((x) => x.info.status === "activa"),
+    [cards, selectedMonth]
+  );
+  const totalCardsMonth = activeInstallments.reduce((s, x) => s + x.info.amount, 0);
+  const thirdPartyCardsMonth = activeInstallments
+    .filter((x) => x.card.owner && x.card.owner !== "Propio")
+    .reduce((s, x) => s + x.info.amount, 0);
 
-  // ----------------------------------------------------
-  // LOGICA Y CALCULOS DERIVADOS
-  // ----------------------------------------------------
-  const calculos = useMemo(() => {
-    const ingresosTotal = transacciones
-      .filter(t => t.tipo === 'ingreso')
-      .reduce((acc, curr) => acc + curr.monto, 0);
+  /* --------- Cuotas que terminan pronto (última cuota este mes) --------- */
+  const endingSoonCards = useMemo(
+    () => activeInstallments.filter((x) => x.info.remaining === 0).map((x) => x.card),
+    [activeInstallments]
+  );
 
-    const gastosTotal = transacciones
-      .filter(t => t.tipo === 'gasto')
-      .reduce((acc, curr) => acc + curr.monto, 0);
-
-    const deudaTarjetasPesos = tarjetas
-      .filter(t => !t.pagada)
-      .reduce((acc, curr) => acc + curr.saldoPesos + (curr.saldoDolares * precioDolar), 0);
-
-    const inversionesTotal = inversiones
-      .reduce((acc, curr) => acc + curr.montoPesos, 0);
-
-    const saldoDisponible = ingresosTotal - gastosTotal - (tarjetas.filter(t => !t.pagada).reduce((acc, curr) => acc + curr.saldoPesos, 0));
-
-    return {
-      ingresosTotal,
-      gastosTotal,
-      deudaTarjetasPesos,
-      inversionesTotal,
-      saldoDisponible
-    };
-  }, [transacciones, tarjetas, inversiones, precioDolar]);
-
-  // ----------------------------------------------------
-  // ACCIONES / MANEJADORES DE EVENTOS
-  // ----------------------------------------------------
-  const handleAgregarTransaccion = (e) => {
-    e.preventDefault();
-    if (!nuevoGasto.categoria || !nuevoGasto.monto) return;
-
-    const nueva = {
-      id: Date.now(),
-      tipo: nuevoGasto.tipo,
-      categoria: nuevoGasto.categoria,
-      detalle: nuevoGasto.detalle || 'Sin detalle',
-      monto: parseFloat(nuevoGasto.monto),
-      fecha: nuevoGasto.fecha,
-      pagado: nuevoGasto.tipo === 'ingreso' ? true : false
-    };
-
-    setTransacciones([nueva, ...transacciones]);
-    setNuevoGasto({ categoria: '', detalle: '', monto: '', fecha: new Date().toISOString().split('T')[0], tipo: 'gasto' });
-  };
-
-  const handleAgregarInversion = (e) => {
-    e.preventDefault();
-    if (!nuevaInversion.activo || !nuevaInversion.montoPesos) return;
-
-    const nueva = {
-      id: Date.now(),
-      tipo: nuevaInversion.tipo,
-      activo: nuevaInversion.activo.toUpperCase(),
-      cantidad: nuevaInversion.cantidad ? parseFloat(nuevaInversion.cantidad) : 1,
-      montoPesos: parseFloat(nuevaInversion.montoPesos),
-      fecha: nuevaInversion.fecha
-    };
-
-    setInversiones([nueva, ...inversiones]);
-    setNuevaInversion({ tipo: 'CEDEAR', activo: '', cantidad: '', montoPesos: '', fecha: new Date().toISOString().split('T')[0] });
-  };
-
-  const handleActualizarDolar = (e) => {
-    e.preventDefault();
-    const nuevoValor = parseFloat(nuevoPrecioDolar);
-    if (isNaN(nuevoValor) || nuevoValor <= 0) return;
-
-    setPrecioDolar(nuevoValor);
-    
-    const mesActual = new Date().toISOString().slice(0, 7);
-    setHistorialDolar(prev => {
-      const filtrado = prev.filter(h => h.fecha !== mesActual);
-      return [...filtrado, { fecha: mesActual, precio: nuevoValor }].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  /* --------- Deudas de terceros agrupadas por quién debe --------- */
+  const debtorsSummary = useMemo(() => {
+    const map = {};
+    cards.forEach((c) => {
+      if (!c.owner || c.owner === "Propio") return;
+      const info = getInstallmentInfo(c, selectedMonth);
+      if (!map[c.owner]) map[c.owner] = { owner: c.owner, totalPrestado: 0, cuotaMes: 0, items: 0 };
+      map[c.owner].totalPrestado += c.totalAmount;
+      map[c.owner].cuotaMes += info.status === "activa" ? info.amount : 0;
+      map[c.owner].items += 1;
     });
+    return Object.values(map).sort((a, b) => b.totalPrestado - a.totalPrestado);
+  }, [cards, selectedMonth]);
+
+  /* --------- Proyección de deuda (6 meses desde el mes seleccionado) --------- */
+  const projectionData = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < 6; i++) {
+      const m = addMonths(selectedMonth, i);
+      const total = cards.reduce((s, c) => {
+        const info = getInstallmentInfo(c, m);
+        return s + (info.status === "activa" ? info.amount : 0);
+      }, 0);
+      arr.push({ month: m, label: monthShort(m), total });
+    }
+    return arr;
+  }, [cards, selectedMonth]);
+
+  /* --------- Comparativa histórica: total gastado en los últimos 6 meses --------- */
+  const historicalData = useMemo(() => {
+    const arr = [];
+    for (let i = 5; i >= 0; i--) {
+      const m = addMonths(selectedMonth, -i);
+      const expTotal = expenses.filter((e) => e.date.slice(0, 7) === m).reduce((s, e) => s + Number(e.amount), 0);
+      const cardsTotal = cards.reduce((s, c) => {
+        const info = getInstallmentInfo(c, m);
+        return s + (info.status === "activa" ? info.amount : 0);
+      }, 0);
+      const usdTotal = usdExpenses.filter((x) => x.date.slice(0, 7) === m).reduce((s, x) => s + Number(x.amount), 0) * usdRate;
+      arr.push({ month: m, label: monthShort(m), total: expTotal + cardsTotal + usdTotal });
+    }
+    return arr;
+  }, [expenses, cards, usdExpenses, usdRate, selectedMonth]);
+
+  /* --------- Pie por categoría (mes seleccionado) --------- */
+  const pieData = useMemo(() => {
+    const byCat = {};
+    monthExpenses.forEach((e) => { byCat[e.category] = (byCat[e.category] || 0) + Number(e.amount); });
+    return Object.entries(byCat)
+      .map(([cat, value]) => ({ name: catInfo(cat).label, value, color: catInfo(cat).color, id: cat }))
+      .sort((a, b) => b.value - a.value);
+  }, [monthExpenses]);
+
+  /* --------- Fijos vs Variables (incluye cuotas como fijo) --------- */
+  const fijoVariable = useMemo(() => {
+    const fijoExpenses = monthExpenses.filter((e) => e.type === "fijo").reduce((s, e) => s + Number(e.amount), 0);
+    const variableExpenses = monthExpenses.filter((e) => e.type === "variable").reduce((s, e) => s + Number(e.amount), 0);
+    const fijo = fijoExpenses + totalCardsMonth;
+    const total = fijo + variableExpenses;
+    return {
+      fijo, variable: variableExpenses, total,
+      fijoPct: total ? (fijo / total) * 100 : 0,
+      variablePct: total ? (variableExpenses / total) * 100 : 0,
+    };
+  }, [monthExpenses, totalCardsMonth]);
+
+  /* --------- Meta de ahorro: progreso histórico acumulado (categoría Ahorro + compras USD) --------- */
+  const totalAhorroAllTime = useMemo(
+    () => expenses.filter((e) => e.category === "ahorro").reduce((s, e) => s + Number(e.amount), 0) + totalUsdInvertidoAllTime,
+    [expenses, totalUsdInvertidoAllTime]
+  );
+  const savingsProgressPct = savingsGoal > 0 ? Math.min(100, (totalAhorroAllTime / savingsGoal) * 100) : 0;
+
+  /* --------- Ingresos y comparador ideal vs real --------- */
+  const incomeTotal = Number(income.sueldoNeto || 0) + extrasMonthTotal;
+  const percentSum = Object.values(idealPercents).reduce((s, v) => s + Number(v || 0), 0);
+
+  /* --------- Balance del mes: ingresos vs. gastos totales (incluye compra de USD como salida hacia ahorro) --------- */
+  const totalGastosGlobal = totalMonthExpenses + totalCardsMonth + arsEquivGastosUsdMonth + totalArsInvertidoMonth;
+  const balanceMes = incomeTotal - totalGastosGlobal;
+
+  const groupReal = useMemo(() => {
+    const vivienda = monthExpenses.filter((e) => e.category === "vivienda").reduce((s, e) => s + Number(e.amount), 0);
+    const ahorroCat = monthExpenses.filter((e) => e.category === "ahorro").reduce((s, e) => s + Number(e.amount), 0);
+    const ahorro = ahorroCat + totalArsInvertidoMonth;
+    const fijos = monthExpenses.filter((e) => e.type === "fijo" && e.category !== "vivienda" && e.category !== "ahorro").reduce((s, e) => s + Number(e.amount), 0);
+    const variables = monthExpenses.filter((e) => e.type === "variable" && e.category !== "vivienda" && e.category !== "ahorro").reduce((s, e) => s + Number(e.amount), 0);
+    return { vivienda, fijos, variables, ahorro, tarjetas: totalCardsMonth };
+  }, [monthExpenses, totalCardsMonth, totalArsInvertidoMonth]);
+
+  const GROUP_LABELS = {
+    vivienda: "Alquiler/Vivienda", fijos: "Gastos Fijos", variables: "Variables/Estilo de vida",
+    ahorro: "Ahorro/Inversión", tarjetas: "Tarjetas",
   };
 
-  const handleAlternarPagoTransaccion = (id) => {
-    setTransacciones(transacciones.map(t => t.id === id ? { ...t, pagado: !t.pagado } : t));
-  };
+  /* --------- Acciones: gastos --------- */
+  function updateCategory(id, category) {
+    setExpenses((prev) => prev.map((e) => (e.id === id ? { ...e, category } : e)));
+  }
+  function updateType(id, type) {
+    setExpenses((prev) => prev.map((e) => (e.id === id ? { ...e, type } : e)));
+  }
+  function deleteExpense(id) { setExpenses((prev) => prev.filter((e) => e.id !== id)); }
+  function deleteExpenseSeries(recurringId, fromDate) {
+    setExpenses((prev) => prev.filter((e) => !(e.recurringId === recurringId && e.date >= fromDate)));
+  }
+  function addExpense() {
+    if (!form.desc.trim() || !form.amount) return;
+    const isFijo = form.type === "fijo";
+    const months = isFijo && form.repeat ? Math.min(60, Math.max(1, parseInt(form.repeatMonths, 10) || 1)) : 1;
+    const recurringId = months > 1 ? Date.now() : null;
+    const baseMonth = form.date.slice(0, 7);
+    const day = form.date.slice(8, 10);
+    const newOnes = [];
+    for (let i = 0; i < months; i++) {
+      const m = addMonths(baseMonth, i);
+      const dateStr = i === 0 ? form.date : clampDateForMonth(m, day);
+      newOnes.push({
+        id: Date.now() + i,
+        desc: form.desc.trim(),
+        amount: Number(form.amount),
+        category: form.category,
+        type: form.type,
+        date: dateStr,
+        recurringId,
+      });
+    }
+    setExpenses((prev) => [...newOnes, ...prev]);
+    setForm({ desc: "", amount: "", category: "comida", type: "variable", date: defaultDateForMonth(selectedMonth), repeat: true, repeatMonths: "12" });
+    setShowAddExpense(false);
+  }
 
-  const handleAlternarPagoTarjeta = (id) => {
-    setTarjetas(tarjetas.map(t => t.id === id ? { ...t, pagada: !t.pagada } : t));
-  };
+  /* --------- Acciones: tarjetas --------- */
+  function deleteCard(id) { setCards((prev) => prev.filter((c) => c.id !== id)); }
+  function updateCardType(id, cardType) {
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, cardType } : c)));
+  }
+  function updateCardOwner(id, owner) {
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, owner } : c)));
+  }
+  function addCard() {
+    const total = Number(cardForm.totalAmount);
+    const installments = parseInt(cardForm.installments, 10);
+    if (!cardForm.name.trim() || !total || !installments || installments < 1) return;
+    setCards((prev) => [
+      ...prev,
+      {
+        id: Date.now(),
+        name: cardForm.name.trim(),
+        totalAmount: total,
+        installments,
+        startMonth: cardForm.startMonth,
+        cardType: cardForm.cardType,
+        owner: cardForm.owner.trim() || "Propio",
+      },
+    ]);
+    setCardForm({ name: "", totalAmount: "", installments: "", startMonth: selectedMonth, cardType: "Visa", owner: "Propio" });
+    setShowAddCard(false);
+  }
 
-  const handleEliminarTransaccion = (id) => {
-    setTransacciones(transacciones.filter(t => t.id !== id));
-  };
+  /* --------- Acciones: ingresos extra --------- */
+  function addExtraIncome() {
+    if (!extraIncomeForm.name.trim() || !extraIncomeForm.amount) return;
+    setExtraIncomes((prev) => [
+      { id: Date.now(), name: extraIncomeForm.name.trim(), amount: Number(extraIncomeForm.amount), date: extraIncomeForm.date },
+      ...prev,
+    ]);
+    setExtraIncomeForm({ name: "", amount: "", date: defaultDateForMonth(selectedMonth) });
+    setShowAddExtraIncome(false);
+  }
+  function deleteExtraIncome(id) { setExtraIncomes((prev) => prev.filter((x) => x.id !== id)); }
 
-  const handleEliminarInversion = (id) => {
-    setInversiones(inversiones.filter(i => i.id !== id));
-  };
+  /* --------- Acciones: USD --------- */
+  function addUsdExpense() {
+    if (!usdExpenseForm.desc.trim() || !usdExpenseForm.amount) return;
+    setUsdExpenses((prev) => [
+      { id: Date.now(), desc: usdExpenseForm.desc.trim(), amount: Number(usdExpenseForm.amount), date: usdExpenseForm.date },
+      ...prev,
+    ]);
+    setUsdExpenseForm({ desc: "", amount: "", date: defaultDateForMonth(selectedMonth) });
+    setShowAddUsdExpense(false);
+  }
+  function deleteUsdExpense(id) { setUsdExpenses((prev) => prev.filter((x) => x.id !== id)); }
+  function addUsdPurchase() {
+    if (!usdPurchaseForm.amount || !usdPurchaseForm.price) return;
+    setUsdPurchases((prev) => [
+      { id: Date.now(), amount: Number(usdPurchaseForm.amount), price: Number(usdPurchaseForm.price), date: usdPurchaseForm.date },
+      ...prev,
+    ]);
+    setUsdPurchaseForm({ amount: "", price: "", date: defaultDateForMonth(selectedMonth) });
+    setShowAddUsdPurchase(false);
+  }
+  function deleteUsdPurchase(id) { setUsdPurchases((prev) => prev.filter((x) => x.id !== id)); }
 
-  const formatearMoneda = (valor) => {
-    return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(valor);
-  };
+  function changeMonth(delta) { setSelectedMonth((m) => addMonths(m, delta)); }
 
+  /* --------- Exportar todos los datos a JSON --------- */
+  function exportData() {
+    const data = {
+      expenses, cards, income, extraIncomes, idealPercents, usdRate, usdExpenses, usdPurchases, savingsGoal,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `control-financiero-${todayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /* =========================================================
+     RENDER
+  ========================================================= */
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24">
-      {/* HEADER DE LA APP */}
-      <header className="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-50 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="bg-emerald-500 p-2 rounded-xl text-slate-950 shadow-lg shadow-emerald-500/20">
-            <Layers size={20} />
-          </div>
-          <div>
-            <h1 className="text-md font-bold tracking-tight text-white">FinanzasPro</h1>
-            <p className="text-xs text-slate-400">Control de Gastos y Tarjetas</p>
-          </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* Header + selector de mes (global) */}
+      <div className="px-5 pt-6 pb-3 bg-slate-900 border-b border-slate-800">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold">Control Financiero</h1>
+          <button onClick={exportData} className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 transition" title="Exportar datos a JSON">
+            <Download size={18} />
+          </button>
         </div>
-        <div className="bg-slate-800/80 border border-slate-700/60 rounded-full px-3 py-1 flex items-center gap-2 text-xs">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span className="font-medium text-slate-300">USD Blue: {formatearMoneda(precioDolar)}</span>
+        <div className="flex items-center justify-between mt-3 bg-slate-800/60 rounded-xl px-2 py-1.5">
+          <button onClick={() => changeMonth(-1)} className="p-1.5 rounded-lg hover:bg-slate-700 active:scale-95 transition">
+            <ChevronLeft size={18} />
+          </button>
+          <span className="text-sm font-medium capitalize">{monthLabel(selectedMonth)}</span>
+          <button onClick={() => changeMonth(1)} className="p-1.5 rounded-lg hover:bg-slate-700 active:scale-95 transition">
+            <ChevronRight size={18} />
+          </button>
         </div>
-      </header>
+      </div>
 
-      <main className="max-w-md mx-auto px-4 pt-4 space-y-4">
-        {/* PESTAÑA 1: DASHBOARD PRINCIPAL */}
-        {vistaActual === 'dashboard' && (
-          <>
-            {/* CARD DISPONIBLE */}
-            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl"></div>
-              <p className="text-xs font-medium text-slate-400 tracking-wider uppercase">Saldo Neto Mensual Disponible</p>
-              <h2 className={`text-3xl font-extrabold mt-1 tracking-tight ${calculos.saldoDisponible >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {formatearMoneda(calculos.saldoDisponible)}
-              </h2>
-              <p className="text-[10px] text-slate-500 mt-1">* Descontando gastos fijos asentados y tarjetas de crédito</p>
-              
-              <div className="grid grid-cols-2 gap-3 mt-5 pt-4 border-t border-slate-800/80">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400"><TrendingUp size={16} /></div>
-                  <div>
-                    <p className="text-[10px] text-slate-400 uppercase font-medium">Ingresos</p>
-                    <p className="text-sm font-semibold text-slate-200">{formatearMoneda(calculos.ingresosTotal)}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <div className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400"><TrendingDown size={16} /></div>
-                  <div>
-                    <p className="text-[10px] text-slate-400 uppercase font-medium">Gastos</p>
-                    <p className="text-sm font-semibold text-slate-200">{formatearMoneda(calculos.gastosTotal)}</p>
-                  </div>
-                </div>
+      {/* Contenido */}
+      <div className="flex-1 overflow-y-auto pb-24 px-4 pt-4">
+        {tab === "gastos" && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 flex-1 mr-2">
+                <p className="text-slate-400 text-xs">Total gastos del mes</p>
+                <p className="text-2xl font-bold">{fmt(totalMonthExpenses)}</p>
               </div>
+              <button
+                onClick={() => { setForm((f) => ({ ...f, date: defaultDateForMonth(selectedMonth) })); setShowAddExpense(true); }}
+                className="bg-orange-500 hover:bg-orange-600 active:scale-95 transition rounded-2xl p-4"
+              >
+                <Plus size={22} />
+              </button>
             </div>
 
-            {/* RESUMEN TARJETAS E INVESTMENTS */}
-            <div className="grid grid-cols-2 gap-3">
-              <div onClick={() => setVistaActual('tarjetas')} className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl cursor-pointer hover:bg-slate-900 transition flex flex-col justify-between">
-                <div className="flex items-center justify-between text-slate-400 mb-2">
-                  <CreditCard size={18} className="text-amber-400" />
-                  <ChevronRight size={14} />
-                </div>
-                <div>
-                  <p className="text-[10px] text-slate-400 uppercase font-medium">Deuda Tarjetas</p>
-                  <p className="text-md font-bold text-amber-400 mt-0.5">{formatearMoneda(calculos.deudaTarjetasPesos)}</p>
-                </div>
-              </div>
+            {monthExpenses.length === 0 && (
+              <p className="text-slate-500 text-sm text-center py-8">No hay gastos cargados este mes.</p>
+            )}
 
-              <div onClick={() => setVistaActual('inversiones')} className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl cursor-pointer hover:bg-slate-900 transition flex flex-col justify-between">
-                <div className="flex items-center justify-between text-slate-400 mb-2">
-                  <PiggyBank size={18} className="text-indigo-400" />
-                  <ChevronRight size={14} />
-                </div>
-                <div>
-                  <p className="text-[10px] text-slate-400 uppercase font-medium">Inversiones</p>
-                  <p className="text-md font-bold text-indigo-400 mt-0.5">{formatearMoneda(calculos.inversionesTotal)}</p>
-                </div>
+            {monthExpenses
+              .slice()
+              .sort((a, b) => new Date(b.date) - new Date(a.date))
+              .map((e) => {
+                const info = catInfo(e.category);
+                return (
+                  <div key={e.id} className="bg-slate-900 rounded-2xl p-4 border border-slate-800">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: info.color }} />
+                        <div className="min-w-0">
+                          <p className="font-medium truncate flex items-center gap-1.5">
+                            {e.desc}
+                            {e.recurringId && <Repeat size={12} className="text-sky-400 shrink-0" />}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            {e.date} · <span className={e.type === "fijo" ? "text-sky-400" : "text-fuchsia-400"}>{e.type === "fijo" ? "Fijo" : "Variable"}</span>
+                            {e.recurringId && <span className="text-sky-400"> · Recurrente</span>}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-semibold">{fmt(e.amount)}</span>
+                        <button onClick={() => setEditingId(editingId === e.id ? null : e.id)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 transition">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => deleteExpense(e.id)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-900 active:scale-95 transition">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {editingId === e.id && (
+                      <div className="mt-3 pt-3 border-t border-slate-800 space-y-3">
+                        <div>
+                          <p className="text-xs text-slate-400 mb-2">Cambiar categoría</p>
+                          <div className="flex flex-wrap gap-2">
+                            {CATEGORIES.map((c) => (
+                              <button
+                                key={c.id}
+                                onClick={() => updateCategory(e.id, c.id)}
+                                className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${e.category === c.id ? "border-transparent text-white" : "border-slate-700 text-slate-300 hover:border-slate-500"}`}
+                                style={e.category === c.id ? { backgroundColor: c.color } : {}}
+                              >
+                                {c.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400 mb-2">Tipo de gasto</p>
+                          <div className="flex gap-2">
+                            <button onClick={() => updateType(e.id, "fijo")} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${e.type === "fijo" ? "bg-sky-500 border-transparent text-white" : "border-slate-700 text-slate-300"}`} >
+                              Fijo
+                            </button>
+                            <button onClick={() => updateType(e.id, "variable")} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${e.type === "variable" ? "bg-fuchsia-500 border-transparent text-white" : "border-slate-700 text-slate-300"}`} >
+                              Variable
+                            </button>
+                          </div>
+                        </div>
+                        {e.recurringId && (
+                          <button onClick={() => deleteExpenseSeries(e.recurringId, e.date)} className="w-full flex items-center justify-center gap-2 text-xs font-medium text-red-300 bg-red-950/40 border border-red-800 rounded-xl py-2 hover:bg-red-950/70 active:scale-95 transition" >
+                            <Trash2 size={13} /> Eliminar esta y las próximas repeticiones
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
+        {tab === "tarjetas" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 flex-1 mr-2">
+                <p className="text-slate-400 text-xs">Cuotas activas este mes</p>
+                <p className="text-2xl font-bold">{fmt(totalCardsMonth)}</p>
+                {thirdPartyCardsMonth > 0 && (
+                  <p className="text-[11px] text-amber-400 mt-1">De las cuales {fmt(thirdPartyCardsMonth)} son de gastos prestados a terceros.</p>
+                )}
               </div>
+              <button onClick={() => { setCardForm((f) => ({ ...f, startMonth: selectedMonth })); setShowAddCard(true); }} className="bg-orange-500 hover:bg-orange-600 active:scale-95 transition rounded-2xl p-4">
+                <Plus size={22} />
+              </button>
             </div>
 
-            {/* LISTA RAPIDA DE TRANSACCIONES */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1">
-                <h3 className="text-sm font-bold text-slate-200 tracking-wide">Transacciones Recientes</h3>
-                <span onClick={() => setVistaActual('transacciones')} className="text-xs text-emerald-400 font-medium cursor-pointer hover:underline">Ver todas</span>
-              </div>
-
-              <div className="space-y-2">
-                {transacciones.slice(0, 4).map((t) => (
-                  <div key={t.id} className="bg-slate-900/40 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${t.tipo === 'ingreso' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                        {t.tipo === 'ingreso' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-slate-200">{t.categoria}</p>
-                        <p className="text-[10px] text-slate-400">{t.detalle}</p>
-                      </div>
-                    </div>
-                    <div className="text-right flex items-center gap-2">
-                      <div>
-                        <p className={`text-xs font-bold ${t.tipo === 'ingreso' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                          {t.tipo === 'ingreso' ? '+' : '-'}{formatearMoneda(t.monto)}
-                        </p>
-                        <p className="text-[9px] text-slate-500">{t.fecha}</p>
-                      </div>
-                      <button 
-                        onClick={() => handleAlternarPagoTransaccion(t.id)}
-                        className={`p-1 rounded-md transition ${t.pagado ? 'text-emerald-400' : 'text-slate-600 hover:text-slate-400'}`}
-                      >
-                        <CheckCircle size={16} fill={t.pagado ? 'currentColor' : 'none'} className={t.pagado ? 'text-slate-950' : ''} />
-                      </button>
-                    </div>
-                  </div>
+            {endingSoonCards.length > 0 && (
+              <div className="bg-amber-950/40 border border-amber-800 rounded-2xl p-4 space-y-1.5">
+                <p className="text-sm font-semibold text-amber-300 flex items-center gap-2">
+                  <AlertTriangle size={16} /> Cuotas que terminan este mes
+                </p>
+                {endingSoonCards.map((c) => (
+                  <p key={c.id} className="text-xs text-amber-200">
+                    {c.name} — es la última cuota, el mes que viene se libera {fmt(c.totalAmount / c.installments)}
+                  </p>
                 ))}
               </div>
-            </div>
-          </>
-        )}
+            )}
 
-        {/* PESTAÑA 2: CONTROL DE TRANSACCIONES */}
-        {vistaActual === 'transacciones' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-md font-bold text-white">Ingresos y Gastos</h2>
-              <button onClick={() => setVistaActual('dashboard')} className="text-xs text-slate-400 hover:text-white">Volver</button>
-            </div>
+            {cards.length === 0 && <p className="text-slate-500 text-sm text-center py-6">No hay tarjetas / financiaciones cargadas.</p>}
 
-            {/* RECUADRO AGREGAR */}
-            <form onSubmit={handleAgregarTransaccion} className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl space-y-3">
-              <p className="text-xs font-bold text-slate-300">Añadir Nueva Transacción</p>
-              
-              <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                <button 
-                  type="button"
-                  onClick={() => setNuevoGasto({ ...nuevoGasto, tipo: 'gasto' })}
-                  className={`py-1.5 text-xs font-medium rounded-lg transition ${nuevoGasto.tipo === 'gasto' ? 'bg-rose-500 text-white shadow-md' : 'text-slate-400'}`}
-                >
-                  Gasto
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setNuevoGasto({ ...nuevoGasto, tipo: 'ingreso' })}
-                  className={`py-1.5 text-xs font-medium rounded-lg transition ${nuevoGasto.tipo === 'ingreso' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400'}`}
-                >
-                  Ingreso
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <input 
-                  type="text" 
-                  placeholder="Categoría (Ej: Súper)" 
-                  value={nuevoGasto.categoria}
-                  onChange={(e) => setNuevoGasto({ ...nuevoGasto, categoria: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                />
-                <input 
-                  type="number" 
-                  placeholder="Monto ($)" 
-                  value={nuevoGasto.monto}
-                  onChange={(e) => setNuevoGasto({ ...nuevoGasto, monto: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <input 
-                type="text" 
-                placeholder="Detalle u observación corta" 
-                value={nuevoGasto.detalle}
-                onChange={(e) => setNuevoGasto({ ...nuevoGasto, detalle: e.target.value })}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-              />
-
-              <div className="flex gap-2 items-center">
-                <input 
-                  type="date" 
-                  value={nuevoGasto.fecha}
-                  onChange={(e) => setNuevoGasto({ ...nuevoGasto, fecha: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none"
-                />
-                <button type="submit" className="flex-1 bg-emerald-500 text-slate-950 font-bold text-xs py-2 rounded-xl hover:bg-emerald-400 transition flex items-center justify-center gap-1 shadow-lg shadow-emerald-500/10">
-                  <PlusCircle size={14} /> Registrar
-                </button>
-              </div>
-            </form>
-
-            {/* LISTADO DETALLADO */}
             <div className="space-y-2">
-              {transacciones.map((t) => (
-                <div key={t.id} className="bg-slate-900/40 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={() => handleAlternarPagoTransaccion(t.id)}
-                      className={`p-1 rounded-md ${t.pagado ? 'text-emerald-400' : 'text-slate-600'}`}
-                    >
-                      <CheckCircle size={18} fill={t.pagado ? 'currentColor' : 'none'} className={t.pagado ? 'text-slate-950' : ''} />
-                    </button>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-semibold text-slate-200">{t.categoria}</span>
-                        <span className={`text-[8px] px-1.5 py-0.2 rounded-full font-bold uppercase ${t.pagado ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                          {t.pagado ? 'Asentado' : 'Pendiente'}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-400">{t.detalle} • <span className="text-slate-500">{t.fecha}</span></p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className={`text-xs font-bold ${t.tipo === 'ingreso' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                      {t.tipo === 'ingreso' ? '+' : '-'}{formatearMoneda(t.monto)}
-                    </span>
-                    <button onClick={() => handleEliminarTransaccion(t.id)} className="text-slate-600 hover:text-rose-400 p-1 transition">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* PESTAÑA 3: TARJETAS DE CRÉDITO */}
-        {vistaActual === 'tarjetas' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-md font-bold text-white">Tarjetas de Crédito</h2>
-              <button onClick={() => setVistaActual('dashboard')} className="text-xs text-slate-400 hover:text-white">Volver</button>
-            </div>
-
-            <div className="space-y-3">
-              {tarjetas.map((tarjeta) => {
-                const totalTarjetaPesos = tarjeta.saldoPesos + (tarjeta.saldoDolares * precioDolar);
+              {cards.map((c) => {
+                const info = getInstallmentInfo(c, selectedMonth);
+                const badge = info.status === "activa" ? { text: `Cuota ${info.num}/${c.installments}`, cls: "bg-sky-500/20 text-sky-300" } : info.status === "finalizada" ? { text: "Finalizada", cls: "bg-slate-700 text-slate-300" } : { text: "Aún no inicia", cls: "bg-amber-500/20 text-amber-300" };
+                const typeColor = CARD_TYPES.find((t) => t.id === c.cardType)?.color || "#64748b";
                 return (
-                  <div key={tarjeta.id} className={`border rounded-2xl p-4 transition relative overflow-hidden ${tarjeta.pagada ? 'bg-slate-900/20 border-slate-900 opacity-60' : 'bg-gradient-to-r from-slate-900 to-slate-900/60 border-slate-800'}`}>
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">{tarjeta.banco}</p>
-                        <h3 className="text-sm font-bold text-white">{tarjeta.nombre}</h3>
+                  <div key={c.id} className="bg-slate-900 rounded-2xl p-4 border border-slate-800">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-medium truncate">{c.name}</p>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold text-white" style={{ backgroundColor: typeColor }}>
+                            {c.cardType || "Otra"}
+                          </span>
+                          {c.owner && c.owner !== "Propio" && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                              Prestada a: {c.owner}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400">{fmt(c.totalAmount)} en {c.installments} cuotas · inicio {monthLabel(c.startMonth)}</p>
                       </div>
-                      <button 
-                        onClick={() => handleAlternarPagoTarjeta(tarjeta.id)}
-                        className={`flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full border transition ${tarjeta.pagada ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-slate-950 border-slate-800 text-amber-400'}`}
-                      >
-                        <CheckCircle size={10} /> {tarjeta.pagada ? 'PAGADA' : 'MARCAR PAGADA'}
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button onClick={() => setEditingCardId(editingCardId === c.id ? null : c.id)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 transition">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => deleteCard(c.id)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-900 active:scale-95 transition">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className={`text-xs px-2 py-1 rounded-full ${badge.cls}`}>{badge.text}</span>
+                      <span className="font-semibold">{info.status === "activa" ? fmt(info.amount) : fmt(0)}</span>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 text-xs mb-3 bg-slate-950/40 p-2 rounded-xl border border-slate-800/40">
-                      <div>
-                        <p className="text-[9px] text-slate-400">Consumo en Pesos</p>
-                        <p className="font-semibold text-slate-200">{formatearMoneda(tarjeta.saldoPesos)}</p>
+                    {editingCardId === c.id && (
+                      <div className="mt-3 pt-3 border-t border-slate-800 space-y-3">
+                        <div>
+                          <p className="text-xs text-slate-400 mb-2">Tipo de tarjeta</p>
+                          <div className="flex gap-2">
+                            {CARD_TYPES.map((t) => (
+                              <button key={t.id} onClick={() => updateCardType(c.id, t.id)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${c.cardType === t.id ? "bg-slate-100 border-transparent text-slate-950" : "border-slate-700 text-slate-300"}`} >
+                                {t.id}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400 mb-1">¿A quién pertenece este consumo?</p>
+                          <input type="text" value={c.owner || ""} onChange={(e) => updateCardOwner(c.id, e.target.value)} placeholder="Ej: Propio, Nombre de amigo..." className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-orange-500" />
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-[9px] text-slate-400">Consumo en Dólares</p>
-                        <p className="font-semibold text-slate-200">US$ {tarjeta.saldoDolares}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[10px] pt-2 border-t border-slate-800/60">
-                      <div className="flex gap-3 text-slate-400">
-                        <span>Cierre: <b>{tarjeta.cierre}</b></span>
-                        <span>Vence: <b>{tarjeta.vencimiento}</b></span>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-[9px] text-slate-400 font-medium">Total Estimado</p>
-                        <p className="text-sm font-black text-amber-400">{formatearMoneda(totalTarjetaPesos)}</p>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
             </div>
-          </div>
-        )}
 
-        {/* PESTAÑA 4: INVERSIONES Y CONFIGURACION DOLAR */}
-        {vistaActual === 'inversiones' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-md font-bold text-white">Portafolio e Inversiones</h2>
-              <button onClick={() => setVistaActual('dashboard')} className="text-xs text-slate-400 hover:text-white">Volver</button>
-            </div>
-
-            {/* ACTUALIZAR VALOR DEL BLUE */}
-            <form onSubmit={handleActualizarDolar} className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-slate-200">Ajustar Cotización Dólar</p>
-                <p className="text-[10px] text-slate-400">Afecta el cálculo de tus tarjetas</p>
-              </div>
-              <div className="flex gap-2 items-center">
-                <input 
-                  type="number" 
-                  value={nuevoPrecioDolar}
-                  onChange={(e) => setNuevoPrecioDolar(e.target.value)}
-                  className="w-20 bg-slate-950 border border-slate-800 rounded-xl px-2 py-1.5 text-xs text-center text-white font-bold focus:outline-none"
-                />
-                <button type="submit" className="bg-slate-800 border border-slate-700 hover:bg-slate-700 text-white p-1.5 rounded-xl transition">
-                  Actualizar
-                </button>
-              </div>
-            </form>
-
-            {/* FORMULARIO AGREGAR ACTIVO */}
-            <form onSubmit={handleAgregarInversion} className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl space-y-3">
-              <p className="text-xs font-bold text-slate-300">Registrar Compra / Inversión</p>
-              <div className="grid grid-cols-3 gap-2">
-                <select 
-                  value={nuevaInversion.tipo}
-                  onChange={(e) => setNuevaInversion({ ...nuevaInversion, tipo: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-xs text-white focus:outline-none"
-                >
-                  <option value="CEDEAR">CEDEAR</option>
-                  <option value="FCI">FCI</option>
-                  <option value="Cripto">Cripto</option>
-                  <option value="Dólar MEP">Dólar MEP</option>
-                </select>
-                <input 
-                  type="text" 
-                  placeholder="Activo (AAPL)" 
-                  value={nuevaInversion.activo}
-                  onChange={(e) => setNuevaInversion({ ...nuevaInversion, activo: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-xs text-white focus:outline-none"
-                />
-                <input 
-                  type="number" 
-                  placeholder="Monto ARS" 
-                  value={nuevaInversion.montoPesos}
-                  onChange={(e) => setNuevaInversion({ ...nuevaInversion, montoPesos: e.target.value })}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-xs text-white focus:outline-none"
-                />
-              </div>
-              <div className="flex gap-2 justify-between items-center">
-                <input 
-                  type="number" 
-                  step="any"
-                  placeholder="Cantidad (Opcional)" 
-                  value={nuevaInversion.cantidad}
-                  onChange={(e) => setNuevaInversion({ ...nuevaInversion, cantidad: e.target.value })}
-                  className="w-1/3 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none"
-                />
-                <button type="submit" className="flex-1 bg-indigo-500 text-white font-bold text-xs py-2 rounded-xl hover:bg-indigo-400 transition flex items-center justify-center gap-1 shadow-lg shadow-indigo-500/10">
-                  <ArrowUpRight size={14} /> Cargar Activo
-                </button>
-              </div>
-            </form>
-
-            {/* PORTAFOLIO LISTADO */}
-            <div className="space-y-2">
-              <p className="text-xs font-bold text-slate-400 px-1">Distribución de Activos</p>
-              {inversiones.map((inv) => (
-                <div key={inv.id} className="bg-slate-900/40 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
-                      <PiggyBank size={16} />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-white">{inv.activo}</span>
-                        <span className="text-[8px] px-1.5 py-0.2 bg-slate-800 text-slate-400 rounded-md font-medium tracking-wide">{inv.tipo}</span>
+            {debtorsSummary.length > 0 && (
+              <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3">
+                <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                  <Users size={16} /> Resumen de consumos prestados (Deudas)
+                </h3>
+                <div className="divide-y divide-slate-800">
+                  {debtorsSummary.map((d) => (
+                    <div key={d.owner} className="py-2.5 first:pt-0 last:pb-0 flex items-center justify-between text-xs">
+                      <div>
+                        <p className="font-semibold text-slate-200 capitalize">{d.owner}</p>
+                        <p className="text-slate-400">{d.items} financiación/es · Total original: {fmt(d.totalPrestado)}</p>
                       </div>
-                      <p className="text-[10px] text-slate-400">Cantidad: {inv.cantidad} • <span className="text-slate-500">{inv.fecha}</span></p>
+                      <div className="text-right">
+                        <p className="font-bold text-amber-400">{fmt(d.cuotaMes)}</p>
+                        <p className="text-[10px] text-slate-500">cuota este mes</p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-indigo-400">{formatearMoneda(inv.montoPesos)}</span>
-                    <button onClick={() => handleEliminarInversion(inv.id)} className="text-slate-600 hover:text-rose-400 p-1 transition">
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </main>
+              </div>
+            )}
 
-      {/* MENÚ DE NAVEGACIÓN INFERIOR (ESTILO MOBILE) */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur-lg border-t border-slate-800 px-6 py-2 flex justify-between items-center max-w-md mx-auto z-50 rounded-t-2xl shadow-2xl">
-        <button 
-          onClick={() => setVistaActual('dashboard')}
-          className={`flex flex-col items-center gap-0.5 p-2 transition ${vistaActual === 'dashboard' ? 'text-emerald-400 font-medium' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <Layers size={18} />
-          <span className="text-[9px]">Inicio</span>
-        </button>
-        <button 
-          onClick={() => setVistaActual('transacciones')}
-          className={`flex flex-col items-center gap-0.5 p-2 transition ${vistaActual === 'transacciones' ? 'text-emerald-400 font-medium' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <DollarSign size={18} />
-          <span className="text-[9px]">Gastos</span>
-        </button>
-        <button 
-          onClick={() => setVistaActual('tarjetas')}
-          className={`flex flex-col items-center gap-0.5 p-2 transition ${vistaActual === 'tarjetas' ? 'text-emerald-400 font-medium' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <CreditCard size={18} />
-          <span className="text-[9px]">Tarjetas</span>
-        </button>
-        <button 
-          onClick={() => setVistaActual('inversiones')}
-          className={`flex flex-col items-center gap-0.5 p-2 transition ${vistaActual === 'inversiones' ? 'text-emerald-400 font-medium' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          <PiggyBank size={18} />
-          <span className="text-[9px]">Inversión</span>
-        </button>
-      </nav>
-    </div>
-  );
-}
+            <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-300">Proyección de Deuda de Tarjetas</h3>
+              <div className="h-40 w-full text-xs">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={projectionData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="label" stroke="#94a3b8" />
+                    <YAxis stroke="#94a3b8" />
+                    <Tooltip formatter={(v) => fmt(v)} contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", color: "#fff" }} />
+                    <Bar dataKey="total" fill
